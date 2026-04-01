@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>NexusPreds - Panel de Control Cloud</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Importación de Firebase desde CDN -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-app.js";
+        import { getFirestore, collection, addDoc, onSnapshot, doc, updateDoc, deleteDoc, arrayUnion } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-firestore.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-auth.js";
+
+        // Configuración de Firebase (Se llena automáticamente en el entorno de ejecución)
+       // Import the functions you need from the SDKs you need
+import { initializeApp } from "firebase/app";
+// TODO: Add SDKs for Firebase products that you want to use
+// https://firebase.google.com/docs/web/setup#available-libraries
+
+// Your web app's Firebase configuration
+const firebaseConfig = {
+  apiKey: "AIzaSyBbjWjnkDKvbM3bsZEL8y32rxtyn6-lnco",
+  authDomain: "bd-nexus-c2f53.firebaseapp.com",
+  projectId: "bd-nexus-c2f53",
+  storageBucket: "bd-nexus-c2f53.firebasestorage.app",
+  messagingSenderId: "822335338391",
+  appId: "1:822335338391:web:88dc9bb75d359a621276d2"
+};
+
+// Initialize Firebase
+const app = initializeApp(firebaseConfig);
+        // Variables de Estado
+        let suscripciones = [];
+        let userAuthenticated = false;
+        let expandedId = null;
+        let sortBy = 'fecha';
+
+        // --- FUNCIONES GLOBALES (Acceso desde el HTML) ---
+        window.openModal = (id) => {
+            document.getElementById(id).style.display = 'flex';
+        };
+
+        window.closeModal = (id) => {
+            document.getElementById(id).style.display = 'none';
+        };
+
+        window.setSort = (val) => {
+            sortBy = val;
+            renderTable();
+            updateSortStyles();
+        };
+
+        // --- SISTEMA DE AUTENTICACIÓN ---
+        const initAuth = async () => {
+            try { 
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            } catch (e) { 
+                console.error("Error de conexión:", e);
+                document.getElementById('db-status').innerText = "⚠️ Error de conexión";
+            }
+        };
+
+        onAuthStateChanged(auth, (user) => { 
+            if (user) {
+                userAuthenticated = true;
+                document.getElementById('db-status').innerText = "● Cloud Online";
+                document.getElementById('db-status').classList.replace('text-slate-400', 'text-green-500');
+                loadData(); 
+            }
+        });
+
+        initAuth();
+
+        // --- GESTIÓN DE DATOS (FIRESTORE) ---
+        function loadData() {
+            if (!userAuthenticated) return;
+            // Siguiendo la Regla 1 de rutas de Firestore
+            const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'suscripciones');
+            
+            onSnapshot(colRef, (snapshot) => {
+                suscripciones = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                renderTable();
+                updateStats();
+            }, (error) => {
+                console.error("Error Firestore:", error);
+            });
+        }
+
+        window.saveVenta = async (e) => {
+            e.preventDefault();
+            const btn = e.target.querySelector('button[type="submit"]');
+            btn.innerText = "GUARDANDO...";
+            btn.disabled = true;
+
+            const nuevaSub = {
+                cliente: document.getElementById('cliente').value,
+                telefono: document.getElementById('telefono').value,
+                plataforma: document.getElementById('plataforma').value,
+                email: document.getElementById('email').value,
+                password: document.getElementById('password').value,
+                costo: parseFloat(document.getElementById('costo').value) || 0,
+                precio: parseFloat(document.getElementById('precio').value) || 0,
+                fechaInicio: document.getElementById('fechaInicio').value,
+                duracion: parseInt(document.getElementById('duracion').value),
+                garantias: 0,
+                historialGarantias: [],
+                createdAt: new Date().toISOString()
+            };
+
+            try {
+                await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'suscripciones'), nuevaSub);
+                e.target.reset();
+                window.closeModal('modal-venta');
+            } catch (error) {
+                alert("Error al guardar en la nube: " + error.message);
+            } finally {
+                btn.innerText = "REGISTRAR EN NUBE";
+                btn.disabled = false;
+            }
+        };
+
+        window.registrarGarantia = async (id) => {
+            const motivo = window.prompt("¿Cuál es la falla detectada?");
+            if (!motivo) return;
+            const sub = suscripciones.find(s => s.id === id);
+            const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'suscripciones', id);
+            
+            try {
+                await updateDoc(docRef, {
+                    garantias: (sub.garantias || 0) + 1,
+                    historialGarantias: arrayUnion({
+                        fecha: new Date().toLocaleString(),
+                        motivo: motivo
+                    })
+                });
+            } catch (e) { alert("Error: " + e.message); }
+        };
+
+        window.eliminarVenta = async (id) => {
+            if (confirm("¿Eliminar permanentemente de la base de datos?")) {
+                await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'suscripciones', id));
+            }
+        };
+
+        // --- LÓGICA DE WHATSAPP ---
+        window.sendWhatsApp = (id) => {
+            const s = suscripciones.find(sub => sub.id === id);
+            let fVence = new Date(s.fechaInicio);
+            fVence.setMonth(fVence.getMonth() + s.duracion);
+            
+            const hoy = new Date();
+            const diffDays = Math.ceil((fVence - hoy) / (1000 * 60 * 60 * 24));
+
+            let mensaje = "";
+            if (diffDays <= 4 && diffDays > 0) {
+                mensaje = `*RECORDATORIO NEXUSPREDS* 🗓️\n\nHola ${s.cliente}, tu servicio de *${s.plataforma}* vence en *${diffDays} días*. ¿Deseas renovar?`;
+            } else {
+                mensaje = `*DATOS DE TU SERVICIO* 📺\n\nCliente: ${s.cliente}\nServicio: ${s.plataforma}\nCorreo: ${s.email}\nClave: ${s.password}\nVence: ${fVence.toLocaleDateString()}`;
+            }
+            window.open(`https://wa.me/${s.telefono.replace(/\D/g, '')}?text=${encodeURIComponent(mensaje)}`, '_blank');
+        };
+
+        // --- RENDERIZADO DE TABLA ---
+        function renderTable() {
+            const body = document.getElementById('table-body');
+            body.innerHTML = '';
+            
+            let items = [...suscripciones];
+            if (sortBy === 'fecha') items.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+            else items.sort((a, b) => a.plataforma.localeCompare(b.plataforma));
+
+            items.forEach(s => {
+                const open = expandedId === s.id;
+                let fVence = new Date(s.fechaInicio);
+                fVence.setMonth(fVence.getMonth() + s.duracion);
+                const diffDays = Math.ceil((fVence - new Date()) / (1000 * 60 * 60 * 24));
+
+                body.innerHTML += `
+                    <tr class="border-b transition-all ${open ? 'bg-blue-50' : 'hover:bg-gray-50'}" onclick="window.expandedId = window.expandedId === '${s.id}' ? null : '${s.id}'; renderTable();">
+                        <td class="p-4">
+                            <div class="font-bold text-slate-800">${s.cliente}</div>
+                            <div class="text-[9px] font-black text-blue-500 uppercase">${s.plataforma}</div>
+                        </td>
+                        <td class="p-4 text-center">
+                            <div class="text-[10px] font-bold">${fVence.toLocaleDateString()}</div>
+                            ${diffDays <= 4 && diffDays > 0 ? `<span class="text-[8px] bg-orange-500 text-white px-2 py-0.5 rounded-full animate-pulse">AVISAR (${diffDays}d)</span>` : ''}
+                            ${diffDays <= 0 ? `<span class="text-[8px] bg-slate-400 text-white px-2 py-0.5 rounded-full">VENCIDO</span>` : ''}
+                        </td>
+                        <td class="p-4 text-right">
+                            <button onclick="event.stopPropagation(); window.sendWhatsApp('${s.id}')" class="p-2 ${diffDays <= 4 && diffDays > 0 ? 'bg-orange-500' : 'bg-green-500'} text-white rounded-xl shadow-lg active:scale-90">
+                                <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M.057 24l1.687-6.163c-1.041-1.804-1.588-3.849-1.587-5.946.003-6.556 5.338-11.891 11.893-11.891 3.181.001 6.167 1.24 8.413 3.488 2.245 2.248 3.481 5.236 3.48 8.414-.003 6.557-5.338 11.892-11.893 11.892-1.99-.001-3.951-.5-5.688-1.448l-6.305 1.654zm6.597-3.807c1.676.995 3.276 1.591 5.392 1.592 5.448 0 9.886-4.434 9.889-9.885.002-5.462-4.415-9.89-9.881-9.892-5.452 0-9.887 4.434-9.889 9.884-.001 2.225.651 3.891 1.746 5.634l-.999 3.648 3.742-.981zm11.387-5.464c-.074-.124-.272-.198-.57-.347-.297-.149-1.758-.868-2.031-.967-.272-.099-.47-.149-.669.149-.198.297-.768.967-.941 1.165-.173.198-.347.223-.644.074-.297-.149-1.255-.462-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.297-.347.446-.521.151-.172.2-.296.3-.495.099-.198.05-.372-.025-.521-.075-.148-.669-1.611-.916-2.206-.242-.579-.487-.501-.669-.51l-.57-.01c-.198 0-.52.074-.792.372s-1.04 1.016-1.04 2.479 1.065 2.876 1.213 3.074c.149.198 2.095 3.2 5.076 4.487.709.306 1.263.489 1.694.626.712.226 1.36.194 1.872.118.571-.085 1.758-.719 2.006-1.413.248-.695.248-1.29.173-1.414z"/></svg>
+                            </button>
+                        </td>
+                    </tr>
+                    ${open ? `
+                    <tr class="bg-slate-100/50">
+                        <td colspan="3" class="p-4">
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div class="bg-white p-4 rounded-2xl shadow-sm border">
+                                    <h4 class="text-[10px] font-black text-blue-500 uppercase mb-2">Credenciales</h4>
+                                    <div class="text-xs font-mono bg-slate-50 p-2 rounded mb-2">USER: ${s.email}</div>
+                                    <div class="text-xs font-mono bg-slate-50 p-2 rounded">PASS: ${s.password}</div>
+                                    <button onclick="window.eliminarVenta('${s.id}')" class="mt-4 text-[9px] text-red-400 font-bold uppercase hover:text-red-600">Eliminar de Nube</button>
+                                </div>
+                                <div class="bg-white p-4 rounded-2xl shadow-sm border">
+                                    <div class="flex justify-between items-center mb-2">
+                                        <h4 class="text-[10px] font-black text-red-500 uppercase">Garantías (${s.garantias})</h4>
+                                        <button onclick="window.registrarGarantia('${s.id}')" class="text-[9px] bg-red-500 text-white px-3 py-1 rounded-full">+ FALLA</button>
+                                    </div>
+                                    <div class="max-h-24 overflow-y-auto space-y-1">
+                                        ${s.historialGarantias?.map(h => `<div class="text-[9px] text-slate-500 border-b py-1"><b>${h.fecha}:</b> ${h.motivo}</div>`).join('') || '<div class="text-[9px] text-slate-300 italic">Limpio</div>'}
+                                    </div>
+                                </div>
+                            </div>
+                        </td>
+                    </tr>
+                    ` : ''}
+                `;
+            });
+        }
+
+        function updateStats() {
+            let total = 0, g = 0;
+            suscripciones.forEach(s => { 
+                total += (s.precio - s.costo); 
+                g += s.garantias; 
+            });
+            document.getElementById('stat-ganancia').innerText = `$${total.toFixed(2)}`;
+            document.getElementById('stat-garantias').innerText = g;
+        }
+
+        function updateSortStyles() {
+            const f = document.getElementById('sort-f'), p = document.getElementById('sort-p');
+            f.className = sortBy === 'fecha' ? "px-4 py-1.5 rounded-lg text-[10px] font-black bg-white text-blue-600 shadow-sm" : "px-4 py-1.5 rounded-lg text-[10px] font-black text-slate-400";
+            p.className = sortBy === 'plataforma' ? "px-4 py-1.5 rounded-lg text-[10px] font-black bg-white text-blue-600 shadow-sm" : "px-4 py-1.5 rounded-lg text-[10px] font-black text-slate-400";
+        }
+
+        window.onload = () => { updateSortStyles(); };
+
+    </script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;700;800&display=swap');
+        body { font-family: 'Plus Jakarta Sans', sans-serif; }
+        .modal { display: none; }
+    </style>
+</head>
+<body class="bg-[#F8FAFC] min-h-screen pb-12">
+    <!-- Header -->
+    <nav class="bg-white/90 backdrop-blur-md sticky top-0 z-50 border-b p-4 shadow-sm">
+        <div class="max-w-4xl mx-auto flex justify-between items-center">
+            <div class="flex items-center gap-3">
+                <div class="w-10 h-10 bg-gradient-to-tr from-blue-600 to-indigo-600 rounded-xl shadow-lg flex items-center justify-center text-white font-black text-xl">N</div>
+                <div>
+                    <h1 class="font-extrabold text-slate-900 tracking-tighter leading-none">NexusPreds</h1>
+                    <p id="db-status" class="text-[8px] font-black text-slate-400 uppercase tracking-widest mt-1">○ Conectando...</p>
+                </div>
+            </div>
+            <button onclick="window.openModal('modal-venta')" class="bg-slate-900 text-white px-4 py-2 rounded-xl text-[10px] font-black shadow-lg active:scale-95 transition-transform">
+                + NUEVA VENTA
+            </button>
+        </div>
+    </nav>
+
+    <!-- Dashboard -->
+    <main class="max-w-4xl mx-auto p-4 space-y-6">
+        <div class="grid grid-cols-2 gap-4">
+            <div class="bg-white p-6 rounded-[2.5rem] shadow-sm border border-slate-100 flex flex-col items-center">
+                <span class="text-[10px] font-black text-slate-400 uppercase mb-1">Utilidad Cloud</span>
+                <div id="stat-ganancia" class="text-2xl font-black text-slate-900">$0.00</div>
+            </div>
+            <div class="bg-white p-6 rounded-[2.5rem] shadow-sm border border-slate-100 flex flex-col items-center">
+                <span class="text-[10px] font-black text-slate-400 uppercase mb-1">Garantías</span>
+                <div id="stat-garantias" class="text-2xl font-black text-red-500">0</div>
+            </div>
+        </div>
+
+        <!-- Lista -->
+        <div class="bg-white rounded-[2rem] shadow-xl shadow-slate-100/50 border overflow-hidden">
+            <div class="p-6 flex justify-between items-center bg-slate-50/50">
+                <h2 class="text-[11px] font-black text-slate-800 uppercase">Inventario en Vivo</h2>
+                <div class="flex bg-slate-200/50 p-1 rounded-xl">
+                    <button id="sort-f" onclick="window.setSort('fecha')" class="px-3 py-1.5 rounded-lg text-[9px] font-black transition-all">RECIENTES</button>
+                    <button id="sort-p" onclick="window.setSort('plataforma')" class="px-3 py-1.5 rounded-lg text-[9px] font-black transition-all">SERVICIO</button>
+                </div>
+            </div>
+
+            <table class="w-full text-left">
+                <thead class="text-[9px] text-slate-400 uppercase font-black bg-white">
+                    <tr>
+                        <th class="p-4">Cliente</th>
+                        <th class="p-4 text-center">Expiración</th>
+                        <th class="p-4 text-right">Acción</th>
+                    </tr>
+                </thead>
+                <tbody id="table-body">
+                    <!-- Datos dinámicos -->
+                </tbody>
+            </table>
+        </div>
+    </main>
+
+    <!-- Modal Registro -->
+    <div id="modal-venta" class="modal fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[100] items-center justify-center p-4">
+        <div class="bg-white w-full max-w-md rounded-[2.5rem] p-8 shadow-2xl overflow-y-auto max-h-[90vh]">
+            <div class="flex justify-between items-center mb-6">
+                <h2 class="text-2xl font-black tracking-tighter">Nueva Venta</h2>
+                <button onclick="window.closeModal('modal-venta')" class="text-slate-300 text-2xl">✕</button>
+            </div>
+            <form onsubmit="window.saveVenta(event)" class="space-y-4">
+                <div class="grid grid-cols-2 gap-2">
+                    <input type="text" id="cliente" required placeholder="Nombre Cliente" class="w-full bg-slate-50 p-4 rounded-2xl text-sm outline-none border focus:border-blue-500">
+                    <input type="text" id="telefono" required placeholder="WhatsApp (521...)" class="w-full bg-slate-50 p-4 rounded-2xl text-sm outline-none border focus:border-blue-500">
+                </div>
+                <select id="plataforma" required class="w-full bg-slate-50 p-4 rounded-2xl text-sm outline-none border">
+                    <option value="" disabled selected>Selecciona Servicio...</option>
+                    <option value="Netflix Premium">Netflix Premium</option>
+                    <option value="Disney+">Disney+</option>
+                    <option value="HBO Max">HBO Max</option>
+                    <option value="Spotify">Spotify</option>
+                    <option value="YouTube">YouTube Premium</option>
+                    <option value="Amazon Prime">Amazon Prime</option>
+                </select>
+                <div class="bg-blue-50/50 p-4 rounded-3xl space-y-2">
+                    <input type="email" id="email" required placeholder="Correo Cuenta" class="w-full p-3 rounded-xl text-xs font-mono outline-none border">
+                    <input type="text" id="password" required placeholder="Contraseña" class="w-full p-3 rounded-xl text-xs font-mono outline-none border">
+                </div>
+                <div class="grid grid-cols-2 gap-2">
+                    <div class="bg-slate-50 p-3 rounded-2xl border">
+                        <label class="text-[8px] font-black text-slate-400 block uppercase">Costo USD/MXN</label>
+                        <input type="number" step="0.01" id="costo" required class="bg-transparent w-full outline-none font-bold text-sm">
+                    </div>
+                    <div class="bg-slate-50 p-3 rounded-2xl border">
+                        <label class="text-[8px] font-black text-slate-400 block uppercase">Precio Venta</label>
+                        <input type="number" step="0.01" id="precio" required class="bg-transparent w-full outline-none font-bold text-sm text-blue-600">
+                    </div>
+                </div>
+                <div class="grid grid-cols-2 gap-2">
+                    <div class="bg-slate-50 p-3 rounded-2xl border">
+                        <label class="text-[8px] font-black text-slate-400 block uppercase">Fecha Inicio</label>
+                        <input type="date" id="fechaInicio" required class="bg-transparent w-full outline-none text-[10px]">
+                    </div>
+                    <div class="bg-slate-50 p-3 rounded-2xl border">
+                        <label class="text-[8px] font-black text-slate-400 block uppercase">Vigencia</label>
+                        <select id="duracion" class="bg-transparent w-full outline-none text-[10px]">
+                            <option value="1">1 Mes</option>
+                            <option value="3">3 Meses</option>
+                            <option value="12">1 Año</option>
+                        </select>
+                    </div>
+                </div>
+                <button type="submit" class="w-full bg-blue-600 text-white font-black py-4 rounded-2xl shadow-xl shadow-blue-100 hover:bg-blue-700 transition-all uppercase tracking-widest text-[10px]">Sincronizar en Nube</button>
+            </form>
+        </div>
+    </div>
+</body>
+</html>
