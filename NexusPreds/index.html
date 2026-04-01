@@ -3,16 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>NexusPreds - Panel de Control Cloud</title>
+    <title>NexusPreds - Admin</title>
     <script src="https://cdn.tailwindcss.com"></script>
     
-    <!-- Firebase SDK Imports -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-app.js";
-        import { getFirestore, collection, addDoc, onSnapshot, doc, updateDoc, deleteDoc, arrayUnion, query, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-firestore.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-auth.js";
+        import { getFirestore, collection, addDoc, onSnapshot, doc, updateDoc, deleteDoc, arrayUnion, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-firestore.js";
+        import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-auth.js";
 
-        // Configuración de Firebase
         const firebaseConfig = {
             apiKey: "AIzaSyBbjWjnkDKvbM3bsZEL8y32rxtyn6-lnco",
             authDomain: "bd-nexus-c2f53.firebaseapp.com",
@@ -22,395 +20,144 @@
             appId: "1:822335338391:web:88dc9bb75d359a621276d2"
         };
 
-        // Inicialización Global
         const app = initializeApp(firebaseConfig);
         const db = getFirestore(app);
         const auth = getAuth(app);
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'bd-nexus-prod';
+        const appId = "nexus-preds-v1";
+        
+        let localUserId = "user_" + Math.random().toString(36).substring(7);
 
-        // Variables de Estado
-        let suscripciones = [];
-        let currentUser = null;
-        let expandedId = null;
-        let sortBy = 'fecha';
+        // Intentar conectar pero no bloquear si falla
+        signInAnonymously(auth).catch(() => console.log("Modo sin auth activado"));
 
-        // --- UTILIDADES DE UI ---
-        const showToast = (msg, type = 'info') => {
-            const toast = document.createElement('div');
-            toast.className = `fixed bottom-20 left-1/2 -translate-x-1/2 px-6 py-3 rounded-2xl text-xs font-bold text-white shadow-2xl z-[200] transition-all animate-bounce ${type === 'error' ? 'bg-red-500' : 'bg-slate-800'}`;
-            toast.innerText = msg;
-            document.body.appendChild(toast);
-            setTimeout(() => toast.remove(), 4000);
-        };
+        // Referencia a la colección (Ruta fija para que funcione siempre)
+        const getColRef = () => collection(db, 'artifacts', appId, 'public', 'data', 'ventas');
 
-        window.openModal = (id) => document.getElementById(id).style.display = 'flex';
-        window.closeModal = (id) => document.getElementById(id).style.display = 'none';
-
-        // --- SISTEMA DE AUTENTICACIÓN (REGLA 3 - CORREGIDO) ---
-        const initAuth = async () => {
-            try {
-                // Intentamos primero con el token personalizado si existe
-                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                    try {
-                        await signInWithCustomToken(auth, __initial_auth_token);
-                        console.log("Autenticado con Custom Token");
-                        return;
-                    } catch (customError) {
-                        console.warn("Fallo Custom Token, intentando anónimo:", customError.code);
-                    }
-                }
-                
-                // Fallback a anónimo si el token falla o no existe
-                await signInAnonymously(auth);
-                console.log("Autenticado Anónimamente");
-
-            } catch (e) {
-                console.error("Auth Error Crítico:", e);
-                if (e.code === 'auth/configuration-not-found' || e.code === 'auth/unauthorized-domain') {
-                    showToast("⚠️ Error de Dominio: Verifica la consola de Firebase", "error");
-                } else {
-                    showToast("Error de conexión: " + e.message, "error");
-                }
-            }
-        };
-
-        // Escuchar cambios de estado de auth
-        onAuthStateChanged(auth, (user) => {
-            const statusEl = document.getElementById('db-status');
-            if (user) {
-                currentUser = user;
-                statusEl.innerText = "● Nube Conectada";
-                statusEl.className = "text-[8px] font-black text-green-500 uppercase tracking-widest mt-1";
-                loadData(); 
-            } else {
-                currentUser = null;
-                statusEl.innerText = "○ Desconectado";
-                statusEl.className = "text-[8px] font-black text-red-500 uppercase tracking-widest mt-1";
-            }
-        });
-
-        // --- GESTIÓN DE DATOS (REGLA 1 y 2) ---
+        // FUNCIÓN: CARGAR DATOS
         function loadData() {
-            if (!currentUser) return;
-            
-            // Ruta obligatoria: /artifacts/{appId}/public/data/{collection}
-            const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'suscripciones');
-            
-            onSnapshot(colRef, (snapshot) => {
-                suscripciones = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                renderTable();
-                updateStats();
-            }, (err) => {
-                console.error("Firestore error:", err);
-                // Si hay error de permisos, mostramos mensaje amigable
-                if (err.code === 'permission-denied') {
-                    showToast("Error de permisos en Firestore", "error");
-                }
-            });
+            onSnapshot(getColRef(), (snap) => {
+                const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+                render(list);
+            }, (err) => console.error("Error Firestore:", err));
         }
 
+        // FUNCIÓN: GUARDAR
         window.saveVenta = async (e) => {
             e.preventDefault();
-            if (!currentUser) {
-                showToast("Espera a que la nube se conecte...", "error");
-                return;
-            }
-
-            const btn = e.target.querySelector('button[type="submit"]');
-            const originalText = btn.innerText;
-            btn.innerText = "GUARDANDO...";
+            const btn = e.target.querySelector('button');
             btn.disabled = true;
+            btn.innerText = "Guardando...";
 
             try {
-                const plataforma = document.getElementById('plataforma').value;
-                if (!plataforma) throw new Error("Selecciona una plataforma");
-
-                const nuevaSub = {
+                const data = {
                     cliente: document.getElementById('cliente').value,
+                    plataforma: document.getElementById('plataforma').value,
                     telefono: document.getElementById('telefono').value,
-                    plataforma: plataforma,
                     email: document.getElementById('email').value,
-                    password: document.getElementById('password').value,
-                    costo: parseFloat(document.getElementById('costo').value) || 0,
-                    precio: parseFloat(document.getElementById('precio').value) || 0,
-                    fechaInicio: document.getElementById('fechaInicio').value,
-                    duracion: parseInt(document.getElementById('duracion').value),
-                    garantias: 0,
-                    historialGarantias: [],
-                    createdAt: serverTimestamp(),
-                    userId: currentUser.uid
+                    pass: document.getElementById('pass').value,
+                    vence: document.getElementById('vence').value,
+                    creado: serverTimestamp(),
+                    userId: auth.currentUser?.uid || localUserId
                 };
-
-                const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'suscripciones');
-                await addDoc(colRef, nuevaSub);
-                
-                showToast("✅ Registro guardado en la nube");
+                await addDoc(getColRef(), data);
                 e.target.reset();
-                window.closeModal('modal-venta');
-            } catch (error) {
-                console.error("Error Save:", error);
-                showToast("Error: " + error.message, "error");
+                window.toggleModal('modal-add');
+            } catch (err) {
+                alert("Error al guardar: Asegúrate de habilitar Firestore en tu panel de Firebase.");
             } finally {
-                btn.innerText = originalText;
                 btn.disabled = false;
+                btn.innerText = "Guardar en Base de Datos";
             }
         };
 
-        window.registrarGarantia = async (id) => {
-            if (!currentUser) return;
-            const motivo = window.prompt("¿Cuál es la falla detectada?");
-            if (!motivo) return;
-            
-            const sub = suscripciones.find(s => s.id === id);
-            const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'suscripciones', id);
-            
+        // FUNCIÓN: ELIMINAR
+        window.deleteVenta = async (id) => {
+            if (!confirm("¿Eliminar este registro?")) return;
             try {
-                await updateDoc(docRef, {
-                    garantias: (sub.garantias || 0) + 1,
-                    historialGarantias: arrayUnion({
-                        fecha: new Date().toLocaleString(),
-                        motivo: motivo
-                    })
-                });
-                showToast("Falla registrada");
-            } catch (e) { showToast("Error al actualizar", "error"); }
+                await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'ventas', id));
+            } catch (err) { alert("No se pudo eliminar"); }
         };
 
-        window.eliminarVenta = async (id) => {
-            if (!currentUser) return;
-            if (confirm("¿Eliminar permanentemente de la nube?")) {
-                try {
-                    await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'suscripciones', id));
-                    showToast("Registro borrado");
-                } catch (e) { showToast("Error al eliminar", "error"); }
-            }
+        // FUNCIÓN: WHATSAPP
+        window.sendWA = (id, tel, cliente, plataforma, email, pass, vence) => {
+            const msg = `*NEXUSPREDS*\nHola ${cliente}, tu cuenta de ${plataforma} está lista.\nUser: ${email}\nPass: ${pass}\nVence: ${vence}`;
+            window.open(`https://wa.me/${tel.replace(/\D/g,'')}?text=${encodeURIComponent(msg)}`, '_blank');
         };
 
-        window.sendWhatsApp = (id) => {
-            const s = suscripciones.find(sub => sub.id === id);
-            let fVence = new Date(s.fechaInicio);
-            fVence.setMonth(fVence.getMonth() + (s.duracion || 1));
-            const msg = `*NEXUSPREDS - TU SERVICIO* 🎬\n\nHola ${s.cliente}, aquí tus accesos:\n\n*Servicio:* ${s.plataforma}\n*User:* ${s.email}\n*Pass:* ${s.password}\n*Vence:* ${fVence.toLocaleDateString()}`;
-            window.open(`https://wa.me/${s.telefono.replace(/\D/g, '')}?text=${encodeURIComponent(msg)}`, '_blank');
-        };
-
-        function renderTable() {
-            const body = document.getElementById('table-body');
-            if (!body) return;
-            body.innerHTML = '';
-            
-            let items = [...suscripciones];
-            if (sortBy === 'fecha') {
-                items.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
-            } else {
-                items.sort((a, b) => a.plataforma.localeCompare(b.plataforma));
-            }
-
-            items.forEach(s => {
-                const isExpanded = expandedId === s.id;
-                let fVence = new Date(s.fechaInicio);
-                fVence.setMonth(fVence.getMonth() + (s.duracion || 1));
-                const diffDays = Math.ceil((fVence - new Date()) / (1000 * 60 * 60 * 24));
-
-                body.innerHTML += `
-                    <tr class="border-b transition-all ${isExpanded ? 'bg-indigo-50' : 'hover:bg-gray-50'}" onclick="window.toggleRow('${s.id}')">
-                        <td class="p-4">
-                            <div class="font-bold text-slate-800">${s.cliente}</div>
-                            <div class="text-[9px] font-black text-indigo-500 uppercase">${s.plataforma}</div>
-                        </td>
-                        <td class="p-4 text-center">
-                            <div class="text-[10px] font-bold">${fVence.toLocaleDateString()}</div>
-                            <div class="text-[8px] font-bold ${diffDays <= 3 ? 'text-red-500' : 'text-slate-400'}">
-                                ${diffDays <= 0 ? 'VENCIDO' : `Faltan ${diffDays}d`}
-                            </div>
-                        </td>
-                        <td class="p-4 text-right">
-                             <button onclick="event.stopPropagation(); window.sendWhatsApp('${s.id}')" class="p-2.5 bg-green-500 text-white rounded-xl shadow-md active:scale-90 transition-transform">
-                                <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M.057 24l1.687-6.163c-1.041-1.804-1.588-3.849-1.587-5.946.003-6.556 5.338-11.891 11.893-11.891 3.181.001 6.167 1.24 8.413 3.488 2.245 2.248 3.481 5.236 3.48 8.414-.003 6.557-5.338 11.892-11.893 11.892-1.99-.001-3.951-.5-5.688-1.448l-6.305 1.654zm6.597-3.807c1.676.995 3.276 1.591 5.392 1.592 5.448 0 9.886-4.434 9.889-9.885.002-5.462-4.415-9.89-9.881-9.892-5.452 0-9.887 4.434-9.889 9.884-.001 2.225.651 3.891 1.746 5.634l-.999 3.648 3.742-.981zm11.387-5.464c-.074-.124-.272-.198-.57-.347-.297-.149-1.758-.868-2.031-.967-.272-.099-.47-.149-.669.149-.198.297-.768.967-.941 1.165-.173.198-.347.223-.644.074-.297-.149-1.255-.462-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.297-.347.446-.521.151-.172.2-.296.3-.495.099-.198.05-.372-.025-.521-.075-.148-.669-1.611-.916-2.206-.242-.579-.487-.501-.669-.51l-.57-.01c-.198 0-.52.074-.792.372s-1.04 1.016-1.04 2.479 1.065 2.876 1.213 3.074c.149.198 2.095 3.2 5.076 4.487.709.306 1.263.489 1.694.626.712.226 1.36.194 1.872.118.571-.085 1.758-.719 2.006-1.413.248-.695.248-1.29.173-1.414z"/></svg>
-                            </button>
-                        </td>
-                    </tr>
-                    ${isExpanded ? `
-                    <tr class="bg-slate-50">
-                        <td colspan="3" class="p-6">
-                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                <div class="bg-white p-5 rounded-3xl shadow-sm border border-slate-200">
-                                    <h4 class="text-[10px] font-black text-indigo-600 uppercase mb-3">Accesos del Cliente</h4>
-                                    <div class="space-y-2">
-                                        <div class="p-3 bg-slate-50 rounded-xl text-xs font-mono break-all border border-slate-100"><b>ID:</b> ${s.email}</div>
-                                        <div class="p-3 bg-slate-50 rounded-xl text-xs font-mono break-all border border-slate-100"><b>PW:</b> ${s.password}</div>
-                                    </div>
-                                    <div class="mt-4 pt-4 border-t flex justify-between items-center">
-                                        <button onclick="event.stopPropagation(); window.eliminarVenta('${s.id}')" class="text-[10px] text-red-400 font-bold uppercase hover:text-red-600">Borrar Registro</button>
-                                        <span class="text-[8px] text-slate-300">ID: ${s.id}</span>
-                                    </div>
-                                </div>
-                                <div class="bg-white p-5 rounded-3xl shadow-sm border border-slate-200">
-                                    <div class="flex justify-between items-center mb-3">
-                                        <h4 class="text-[10px] font-black text-red-600 uppercase">Fallas / Garantías</h4>
-                                        <button onclick="event.stopPropagation(); window.registrarGarantia('${s.id}')" class="bg-red-500 text-white text-[9px] font-bold px-3 py-1 rounded-full">+ FALLA</button>
-                                    </div>
-                                    <div class="max-h-32 overflow-y-auto">
-                                        ${s.historialGarantias && s.historialGarantias.length > 0 
-                                            ? s.historialGarantias.map(h => `<div class="text-[9px] p-2 border-b text-slate-600"><b>${h.fecha}:</b> ${h.motivo}</div>`).join('')
-                                            : '<p class="text-center text-[10px] text-slate-300 italic py-4">Sin reportes</p>'}
-                                    </div>
-                                </div>
-                            </div>
-                        </td>
-                    </tr>` : ''}
-                `;
-            });
+        function render(data) {
+            const container = document.getElementById('app-list');
+            container.innerHTML = data.map(item => `
+                <div class="bg-white p-4 rounded-2xl shadow-sm border mb-3">
+                    <div class="flex justify-between items-start">
+                        <div>
+                            <h3 class="font-bold text-slate-800">${item.cliente}</h3>
+                            <p class="text-xs text-indigo-600 font-bold uppercase">${item.plataforma}</p>
+                        </div>
+                        <span class="text-[10px] bg-slate-100 px-2 py-1 rounded-lg font-mono">${item.vence}</span>
+                    </div>
+                    <div class="mt-3 grid grid-cols-2 gap-2">
+                        <button onclick="window.sendWA('${item.id}', '${item.telefono}', '${item.cliente}', '${item.plataforma}', '${item.email}', '${item.pass}', '${item.vence}')" class="bg-green-500 text-white py-2 rounded-xl text-xs font-bold">WhatsApp</button>
+                        <button onclick="window.deleteVenta('${item.id}')" class="bg-red-50 text-red-500 py-2 rounded-xl text-xs font-bold">Eliminar</button>
+                    </div>
+                    <div class="mt-2 p-2 bg-slate-50 rounded-lg text-[10px] font-mono text-slate-500 truncate">
+                        ${item.email} | ${item.pass}
+                    </div>
+                </div>
+            `).join('');
         }
 
-        window.toggleRow = (id) => {
-            expandedId = expandedId === id ? null : id;
-            renderTable();
+        window.toggleModal = (id) => {
+            const m = document.getElementById(id);
+            m.classList.toggle('hidden');
+            m.classList.toggle('flex');
         };
 
-        function updateStats() {
-            let total = 0, g = 0;
-            suscripciones.forEach(s => { 
-                total += (s.precio - s.costo); 
-                g += (s.garantias || 0); 
-            });
-            document.getElementById('stat-ganancia').innerText = `$${total.toFixed(0)}`;
-            document.getElementById('stat-garantias').innerText = g;
-        }
-
-        window.setSort = (val) => {
-            sortBy = val;
-            renderTable();
-            document.getElementById('sort-f').className = sortBy === 'fecha' ? "px-3 py-1.5 rounded-lg text-[9px] font-black bg-white text-indigo-600 shadow-sm" : "px-3 py-1.5 rounded-lg text-[9px] font-black text-slate-400";
-            document.getElementById('sort-p').className = sortBy === 'plataforma' ? "px-3 py-1.5 rounded-lg text-[9px] font-black bg-white text-indigo-600 shadow-sm" : "px-3 py-1.5 rounded-lg text-[9px] font-black text-slate-400";
-        };
-
-        window.onload = initAuth;
+        window.onload = loadData;
     </script>
+
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;700;800&display=swap');
-        body { font-family: 'Plus Jakarta Sans', sans-serif; -webkit-tap-highlight-color: transparent; }
-        .modal { display: none; }
-        input, select { -webkit-appearance: none; }
+        body { font-family: sans-serif; background: #f8fafc; }
     </style>
 </head>
-<body class="bg-[#F8FAFC] min-h-screen pb-12">
-    <!-- Navbar -->
-    <nav class="bg-white/80 backdrop-blur-md sticky top-0 z-50 border-b p-4">
-        <div class="max-w-4xl mx-auto flex justify-between items-center">
-            <div class="flex items-center gap-3">
-                <div class="w-10 h-10 bg-indigo-600 rounded-2xl shadow-lg flex items-center justify-center text-white font-black text-xl">N</div>
-                <div>
-                    <h1 class="font-extrabold text-slate-900 tracking-tight leading-none">NexusPreds</h1>
-                    <p id="db-status" class="text-[8px] font-black text-slate-400 uppercase tracking-widest mt-1 tracking-tighter">○ Conectando...</p>
-                </div>
-            </div>
-            <button onclick="window.openModal('modal-venta')" class="bg-slate-900 text-white px-5 py-2.5 rounded-2xl text-[10px] font-black shadow-lg active:scale-95 transition-all">
-                + NUEVA VENTA
-            </button>
+<body class="p-4 pb-24">
+
+    <div class="max-w-md mx-auto">
+        <header class="flex justify-between items-center mb-6">
+            <h1 class="text-2xl font-black text-slate-900 tracking-tighter">NexusPreds</h1>
+            <button onclick="window.toggleModal('modal-add')" class="bg-indigo-600 text-white px-4 py-2 rounded-xl font-bold text-sm shadow-lg shadow-indigo-100">+ Nuevo</button>
+        </header>
+
+        <div id="app-list">
+            <p class="text-center text-slate-400 text-sm mt-10 italic">Cargando base de datos...</p>
         </div>
-    </nav>
+    </div>
 
-    <main class="max-w-4xl mx-auto p-4 space-y-4">
-        <!-- Stats -->
-        <div class="grid grid-cols-2 gap-4">
-            <div class="bg-white p-6 rounded-[2.5rem] border border-slate-100 flex flex-col items-center shadow-sm">
-                <span class="text-[9px] font-black text-slate-400 uppercase mb-1">Ganancia Cloud</span>
-                <div id="stat-ganancia" class="text-2xl font-black text-slate-900">$0</div>
-            </div>
-            <div class="bg-white p-6 rounded-[2.5rem] border border-slate-100 flex flex-col items-center shadow-sm">
-                <span class="text-[9px] font-black text-slate-400 uppercase mb-1">Garantías</span>
-                <div id="stat-garantias" class="text-2xl font-black text-red-500">0</div>
-            </div>
-        </div>
-
-        <!-- Table -->
-        <div class="bg-white rounded-[2rem] border border-slate-100 overflow-hidden shadow-sm">
-            <div class="p-6 flex justify-between items-center bg-slate-50/50 border-b">
-                <h2 class="text-[10px] font-black text-slate-800 uppercase tracking-wider">Inventario Cloud</h2>
-                <div class="flex bg-slate-200/50 p-1 rounded-xl">
-                    <button id="sort-f" onclick="window.setSort('fecha')" class="px-3 py-1.5 rounded-lg text-[9px] font-black bg-white text-indigo-600 shadow-sm">FECHA</button>
-                    <button id="sort-p" onclick="window.setSort('plataforma')" class="px-3 py-1.5 rounded-lg text-[9px] font-black text-slate-400 ml-1">SERVICIO</button>
-                </div>
-            </div>
-
-            <div class="overflow-x-auto">
-                <table class="w-full">
-                    <thead class="text-[9px] text-slate-400 uppercase font-black border-b text-left">
-                        <tr>
-                            <th class="p-4">Cliente</th>
-                            <th class="p-4 text-center">Vencimiento</th>
-                            <th class="p-4 text-right">Link</th>
-                        </tr>
-                    </thead>
-                    <tbody id="table-body">
-                        <!-- Content via JS -->
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    </main>
-
-    <!-- Modal Venta -->
-    <div id="modal-venta" class="modal fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[100] items-center justify-center p-4">
-        <div class="bg-white w-full max-w-md rounded-[3rem] p-8 shadow-2xl overflow-y-auto max-h-[95vh]">
-            <div class="flex justify-between items-center mb-6">
-                <h2 class="text-2xl font-black tracking-tighter">Registrar Venta</h2>
-                <button onclick="window.closeModal('modal-venta')" class="text-slate-300 text-2xl hover:text-slate-500">✕</button>
-            </div>
-            
-            <form onsubmit="window.saveVenta(event)" class="space-y-4">
-                <div class="grid grid-cols-2 gap-3">
-                    <input type="text" id="cliente" required placeholder="Nombre" class="w-full bg-slate-50 p-4 rounded-2xl text-sm border focus:border-indigo-500 outline-none">
-                    <input type="text" id="telefono" required placeholder="521..." class="w-full bg-slate-50 p-4 rounded-2xl text-sm border focus:border-indigo-500 outline-none">
-                </div>
-
-                <select id="plataforma" required class="w-full bg-slate-50 p-4 rounded-2xl text-sm border focus:border-indigo-500 outline-none">
-                    <option value="">Selecciona Servicio...</option>
-                    <option value="Netflix Premium">Netflix Premium</option>
-                    <option value="Disney+ Premium">Disney+ Premium</option>
-                    <option value="Max Premium">Max Premium</option>
-                    <option value="Spotify Individual">Spotify Individual</option>
-                    <option value="YouTube Premium">YouTube Premium</option>
+    <!-- MODAL -->
+    <div id="modal-add" class="hidden fixed inset-0 bg-black/50 backdrop-blur-sm z-50 items-center justify-center p-4">
+        <div class="bg-white w-full max-w-sm rounded-3xl p-6 shadow-xl">
+            <h2 class="text-xl font-bold mb-4">Nueva Venta</h2>
+            <form onsubmit="window.saveVenta(event)" class="space-y-3">
+                <input type="text" id="cliente" placeholder="Cliente" required class="w-full p-3 bg-slate-100 rounded-xl outline-none text-sm">
+                <input type="tel" id="telefono" placeholder="WhatsApp (Ej: 521...)" required class="w-full p-3 bg-slate-100 rounded-xl outline-none text-sm">
+                <select id="plataforma" required class="w-full p-3 bg-slate-100 rounded-xl outline-none text-sm font-bold">
+                    <option value="Netflix">Netflix</option>
+                    <option value="Disney+">Disney+</option>
+                    <option value="Max">Max</option>
                     <option value="Prime Video">Prime Video</option>
-                    <option value="Crunchyroll">Crunchyroll</option>
                 </select>
-
-                <div class="bg-indigo-50 p-5 rounded-[2rem] space-y-3 border border-indigo-100">
-                    <input type="email" id="email" required placeholder="Email de la cuenta" class="w-full p-3 rounded-xl text-xs font-mono border focus:border-indigo-300 outline-none">
-                    <input type="text" id="password" required placeholder="Contraseña" class="w-full p-3 rounded-xl text-xs font-mono border focus:border-indigo-300 outline-none">
+                <input type="text" id="email" placeholder="Correo / Usuario" required class="w-full p-3 bg-slate-100 rounded-xl outline-none text-sm">
+                <input type="text" id="pass" placeholder="Contraseña" required class="w-full p-3 bg-slate-100 rounded-xl outline-none text-sm">
+                <div class="flex flex-col">
+                    <label class="text-[10px] font-bold text-slate-400 ml-2">VENCIMIENTO</label>
+                    <input type="date" id="vence" required class="w-full p-3 bg-slate-100 rounded-xl outline-none text-sm">
                 </div>
-
-                <div class="grid grid-cols-2 gap-3">
-                    <div class="bg-slate-50 p-3 rounded-2xl border">
-                        <label class="text-[8px] font-black text-slate-400 uppercase">Costo $</label>
-                        <input type="number" step="0.1" id="costo" required class="w-full bg-transparent font-bold text-sm outline-none">
-                    </div>
-                    <div class="bg-slate-50 p-3 rounded-2xl border">
-                        <label class="text-[8px] font-black text-slate-400 uppercase">Precio $</label>
-                        <input type="number" step="0.1" id="precio" required class="w-full bg-transparent font-bold text-sm text-indigo-600 outline-none">
-                    </div>
+                <div class="flex gap-2 pt-2">
+                    <button type="button" onclick="window.toggleModal('modal-add')" class="flex-1 py-3 text-slate-500 font-bold">Cancelar</button>
+                    <button type="submit" class="flex-[2] bg-indigo-600 text-white py-3 rounded-2xl font-bold shadow-lg">Guardar</button>
                 </div>
-
-                <div class="grid grid-cols-2 gap-3">
-                    <div class="bg-slate-50 p-3 rounded-2xl border">
-                        <label class="text-[8px] font-black text-slate-400 uppercase">Inicia</label>
-                        <input type="date" id="fechaInicio" required class="w-full bg-transparent text-[10px] outline-none">
-                    </div>
-                    <div class="bg-slate-50 p-3 rounded-2xl border">
-                        <label class="text-[8px] font-black text-slate-400 uppercase">Meses</label>
-                        <select id="duracion" class="w-full bg-transparent text-[10px] font-bold outline-none">
-                            <option value="1">1 Mes</option>
-                            <option value="3">3 Meses</option>
-                            <option value="6">6 Meses</option>
-                            <option value="12">12 Meses</option>
-                        </select>
-                    </div>
-                </div>
-
-                <button type="submit" class="w-full bg-indigo-600 text-white font-black py-4 rounded-2xl shadow-xl shadow-indigo-100 active:scale-95 transition-all text-[10px] uppercase tracking-widest">Sincronizar Cloud</button>
             </form>
         </div>
     </div>
+
 </body>
 </html>
